@@ -1,0 +1,4 @@
+dependencies:
+  espressif/cjson: "^1.7.18"
+  espressif/esp_jpeg: ">=1.0.2"
+  lvgl/lvgl: "^9.2.0"

@@ -1,0 +1,27 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "config_manager.c"
+        "wifi_portal.c"
+        "spotify_service.c"
+        "cyd_display.c"
+        "cyd_touch.c"
+        "ui_view.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_lcd
+        esp_driver_spi
+        esp_driver_gpio
+        esp_driver_ledc
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_client
+        esp_http_server
+        nvs_flash
+        mbedtls
+        esp_timer
+        esp_jpeg
+        lvgl
+)
