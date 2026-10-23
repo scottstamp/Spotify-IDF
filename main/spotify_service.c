@@ -395,6 +395,11 @@ static void poll_currently_playing(void)
     if (status_code == 204) {
         s_current_state.has_track = false;
         s_current_state.is_playing = false;
+        s_current_state.image_loaded = false;
+        s_current_state.image_updated = false;
+        s_current_state.image_url[0] = '\0';
+        s_last_track_id[0] = '\0';
+        s_current_state.track_name[0] = '\0';
         free(resp_buf);
         if (s_state_cb) s_state_cb(&s_current_state);
         return;
@@ -443,7 +448,8 @@ static void poll_currently_playing(void)
             snprintf(new_track, sizeof(new_track), "%s", name_item->valuestring);
         }
 
-        if ((new_id[0] != '\0' && strcmp(s_last_track_id, new_id) != 0) ||
+        if (!s_current_state.has_track ||
+            (new_id[0] != '\0' && strcmp(s_last_track_id, new_id) != 0) ||
             strcmp(s_current_state.track_name, new_track) != 0) {
             track_changed = true;
             snprintf(s_current_state.track_name, sizeof(s_current_state.track_name), "%s", new_track);
@@ -492,7 +498,7 @@ static void poll_currently_playing(void)
                 }
                 cJSON *url_item = cJSON_GetObjectItem(best_img, "url");
                 if (url_item && url_item->valuestring) {
-                    if (strcmp(s_current_state.image_url, url_item->valuestring) != 0 || !s_current_state.image_loaded) {
+                    if (track_changed || strcmp(s_current_state.image_url, url_item->valuestring) != 0 || !s_current_state.image_loaded) {
                         snprintf(pending_img_url, sizeof(pending_img_url), "%s", url_item->valuestring);
                         need_img_download = true;
                     } else {
@@ -508,6 +514,7 @@ static void poll_currently_playing(void)
 
         // If track changed, immediately publish metadata to UI so title/artist update with ZERO delay!
         if (track_changed) {
+            s_current_state.image_loaded = false;
             s_current_state.image_updated = false;
             if (s_state_cb) {
                 s_state_cb(&s_current_state);

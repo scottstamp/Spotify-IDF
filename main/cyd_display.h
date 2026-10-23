@@ -17,7 +17,14 @@
 #define CYD_PIN_LCD_RST  -1
 #define CYD_PIN_LCD_BL   21
 
+#define CYD_PIN_RGB_LED_R 4
+#define CYD_PIN_RGB_LED_G 16
+#define CYD_PIN_RGB_LED_B 17
+
 esp_err_t cyd_display_init(void);
 void cyd_display_set_backlight(uint8_t brightness_pct);
+void cyd_rgb_led_init(void);
+void cyd_rgb_led_set(bool r, bool g, bool b);
+void cyd_rgb_led_off(void);
 esp_lcd_panel_handle_t cyd_display_get_panel_handle(void);
 void cyd_display_set_lvgl_disp(lv_display_t *disp);

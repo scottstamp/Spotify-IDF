@@ -6,6 +6,7 @@
 #include "esp_heap_caps.h"
 #include "cyd_display.h"
 #include "cyd_touch.h"
+#include "esp_lcd_panel_ops.h"
 #include "lvgl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -19,6 +20,8 @@ static SemaphoreHandle_t s_lvgl_mux = NULL;
 
 static int64_t s_last_sync_us = 0;
 static uint32_t s_interpolated_progress_ms = 0;
+static bool s_backlight_on = true;
+static int64_t s_last_active_us = 0;
 
 // Single shared 150x150 RGB565 album art buffer
 static uint16_t s_album_art[SPOTIFY_IMAGE_SIZE * SPOTIFY_IMAGE_SIZE] = {0};
@@ -39,6 +42,7 @@ static lv_image_dsc_t s_album_img_dsc = {
 static lv_obj_t *s_screen_player = NULL;
 static lv_obj_t *s_screen_setup = NULL;
 static lv_obj_t *s_screen_auth = NULL;
+static lv_obj_t *s_screen_blank = NULL;
 
 // Player Screen Widgets
 static lv_obj_t *s_img_album = NULL;
@@ -99,11 +103,75 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     esp_lcd_panel_draw_bitmap(panel_handle, x1, y1, x2 + 1, y2 + 1, px_map);
 }
 
+static void set_display_sleep(bool sleep)
+{
+    if (sleep) {
+        if (!s_backlight_on) return;
+        s_backlight_on = false;
+
+        // 1. Blank screen in LVGL and flush immediately over DMA (zeroes out LCD internal frame memory)
+        if (s_screen_blank) {
+            lv_screen_load(s_screen_blank);
+            lv_refr_now(NULL);
+        }
+
+        // 2. Shut off LCD panel display output (DISPOFF 0x28) to unbias crystals
+        esp_lcd_panel_handle_t panel = cyd_display_get_panel_handle();
+        if (panel) {
+            esp_lcd_panel_disp_on_off(panel, false);
+        }
+
+        // 3. Turn off backlight
+        cyd_display_set_backlight(0);
+        ESP_LOGI(TAG, "Display sleep: Backlight OFF, panel DISPOFF, screen blanked");
+    } else {
+        if (s_backlight_on) return;
+        s_backlight_on = true;
+
+        // 1. Re-enable LCD panel display output (DISPON 0x29)
+        esp_lcd_panel_handle_t panel = cyd_display_get_panel_handle();
+        if (panel) {
+            esp_lcd_panel_disp_on_off(panel, true);
+        }
+
+        // 2. Reload active UI screen and render before turning backlight on
+        if (s_current_screen == UI_SCREEN_PLAYER && s_screen_player) {
+            lv_screen_load(s_screen_player);
+            if (s_ui_state.image_loaded) {
+                lv_image_set_src(s_img_album, &s_album_img_dsc);
+                lv_obj_set_hidden(s_img_album, false);
+                lv_obj_set_hidden(s_album_placeholder, true);
+            }
+            lv_refr_now(NULL);
+        } else if (s_current_screen == UI_SCREEN_SETUP && s_screen_setup) {
+            lv_screen_load(s_screen_setup);
+            lv_refr_now(NULL);
+        } else if (s_current_screen == UI_SCREEN_AUTH_PENDING && s_screen_auth) {
+            lv_screen_load(s_screen_auth);
+            lv_refr_now(NULL);
+        }
+
+        // 3. Restore backlight with fresh frame already loaded
+        cyd_display_set_backlight(100);
+        ESP_LOGI(TAG, "Display woke up: Backlight ON, panel DISPON, screen restored");
+
+        // 4. Immediately trigger an instant poll from Spotify to catch any track or art changes while asleep
+        spotify_service_send_cmd(SPOTIFY_CMD_REFRESH_NOW);
+    }
+}
+
 // Touch input callback for LVGL 9
 static void lvgl_touch_read_cb(lv_indev_t *indev, lv_indev_data_t *data)
 {
     cyd_touch_point_t pt;
     if (cyd_touch_read(&pt)) {
+        s_last_active_us = esp_timer_get_time();
+        if (!s_backlight_on) {
+            set_display_sleep(false);
+            // Consume wake-up tap so the user does not blindly click a button
+            data->state = LV_INDEV_STATE_RELEASED;
+            return;
+        }
         data->point.x = pt.x;
         data->point.y = pt.y;
         data->state = LV_INDEV_STATE_PRESSED;
@@ -361,6 +429,10 @@ void ui_view_set_screen(ui_screen_t screen, const char *msg)
     if (!s_lvgl_mux) return;
     xSemaphoreTake(s_lvgl_mux, portMAX_DELAY);
     s_current_screen = screen;
+    s_last_active_us = esp_timer_get_time();
+    if (!s_backlight_on) {
+        set_display_sleep(false);
+    }
 
     if (screen == UI_SCREEN_SETUP) {
         if (msg && s_lbl_setup_msg) {
@@ -388,16 +460,25 @@ void ui_view_update_state(const spotify_playback_state_t *state)
     s_last_sync_us = esp_timer_get_time();
     s_interpolated_progress_ms = state->progress_ms;
 
+    if (state->has_track && state->is_playing) {
+        s_last_active_us = esp_timer_get_time();
+        if (!s_backlight_on) {
+            set_display_sleep(false);
+        }
+    }
+
     if (s_current_screen == UI_SCREEN_PLAYER) {
         if (state->has_track) {
             lv_label_set_text(s_lbl_track, state->track_name);
             lv_label_set_text(s_lbl_artist, state->artist_name);
 
-            if (state->image_updated) {
-                lv_image_set_src(s_img_album, &s_album_img_dsc);
+            if (state->image_loaded) {
+                if (state->image_updated) {
+                    lv_image_set_src(s_img_album, &s_album_img_dsc);
+                }
                 lv_obj_set_hidden(s_img_album, false);
                 lv_obj_set_hidden(s_album_placeholder, true);
-            } else if (!state->image_loaded) {
+            } else {
                 lv_obj_set_hidden(s_img_album, true);
                 lv_obj_set_hidden(s_album_placeholder, false);
             }
@@ -457,6 +538,22 @@ static void ui_render_task(void *arg)
             lv_label_set_text(s_lbl_time_cur, buf);
         }
 
+        // Backlight timeout: if no song is playing for >30 seconds on player screen, blank screen and turn backlight off
+        if (s_current_screen == UI_SCREEN_PLAYER) {
+            bool is_playing = s_ui_state.has_track && s_ui_state.is_playing;
+            if (is_playing) {
+                s_last_active_us = esp_timer_get_time();
+                if (!s_backlight_on) {
+                    set_display_sleep(false);
+                }
+            } else if (s_backlight_on) {
+                int64_t inactive_ms = (esp_timer_get_time() - s_last_active_us) / 1000;
+                if (inactive_ms >= 30000) {
+                    set_display_sleep(true);
+                }
+            }
+        }
+
         uint32_t time_till_next = lv_timer_handler();
         xSemaphoreGive(s_lvgl_mux);
 
@@ -499,7 +596,17 @@ void ui_view_init(void)
     create_setup_screen();
     create_auth_screen();
 
+    // Blank screen for sleep mode
+    s_screen_blank = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(s_screen_blank, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_bg_opa(s_screen_blank, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(s_screen_blank, LV_SCROLLBAR_MODE_OFF);
+
     lv_screen_load(s_screen_setup);
+
+    s_last_active_us = esp_timer_get_time();
+    s_backlight_on = true;
+    cyd_display_set_backlight(100);
 
     // Core 1 UI Task (runs LVGL 9 timers, animation, and touch handling at 50Hz)
     xTaskCreatePinnedToCore(ui_render_task, "ui_render_task", 6144, NULL, 5, NULL, 1);

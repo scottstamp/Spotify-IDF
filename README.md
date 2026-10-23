@@ -33,6 +33,13 @@ Powered by **LVGL 9**, hardware DMA display acceleration, and a dual-core FreeRT
   - Immediate metadata dispatch: Track title and artist update on screen instantly before image streaming starts.
 - **Market Relinking (`market=from_token`)**:
   - Queries Spotify API with user token market context to align duration with regional releases and strip 2+ KB of unused country code data.
+- **Smart Screen Power Management & Burn-In Prevention**:
+  - Enters deep sleep when no song is playing for longer than **30 seconds**.
+  - **Zero Frame Wear**: Flushes a pure black frame to the display's internal GRAM and executes the ILI9341 `DISPOFF` (0x28) command to completely unbias the liquid crystals and prevent static image retention or panel burn-in.
+  - Shuts off the LED backlight completely.
+  - Wakes up immediately upon tapping the touch screen or when a song starts playing on Spotify.
+  - Restores the UI to GRAM and executes `DISPON` (0x29) before reenabling the backlight for tear-free, seamless wake-up.
+  - Initial wake-up tap in the dark is safely consumed without accidentally triggering buttons.
 - **Captive Portal Web Provisioning**:
   - Onboard SoftAP (`CYD-Spotify-Setup`) and web server for entering Wi-Fi credentials, Spotify Client ID, and Client Secret into non-volatile storage (`nvs_flash`).
 

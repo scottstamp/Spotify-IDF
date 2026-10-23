@@ -47,6 +47,9 @@ esp_err_t cyd_display_init(void)
     gpio_config(&bl_conf);
     gpio_set_level(CYD_PIN_LCD_BL, 1); // Turn on backlight
 
+    // Initialize and turn off onboard RGB LED (GPIOs 4, 16, 17 on low side as drains)
+    cyd_rgb_led_init();
+
     // Configure SPI Bus for LCD (SPI2_HOST / HSPI)
     spi_bus_config_t buscfg = {
         .sclk_io_num = CYD_PIN_LCD_SCLK,
@@ -98,4 +101,36 @@ esp_err_t cyd_display_init(void)
 void cyd_display_set_backlight(uint8_t brightness_pct)
 {
     gpio_set_level(CYD_PIN_LCD_BL, brightness_pct > 0 ? 1 : 0);
+}
+
+void cyd_rgb_led_init(void)
+{
+    gpio_config_t rgb_conf = {
+        .pin_bit_mask = (1ULL << CYD_PIN_RGB_LED_R) |
+                        (1ULL << CYD_PIN_RGB_LED_G) |
+                        (1ULL << CYD_PIN_RGB_LED_B),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    gpio_config(&rgb_conf);
+
+    // Common anode: GPIOs on low side act as drains (active LOW).
+    // Set HIGH (1) to disable current sinking and turn LED completely off.
+    cyd_rgb_led_off();
+    ESP_LOGI(TAG, "Onboard RGB LED initialized and turned OFF (R:IO%d, G:IO%d, B:IO%d)",
+             CYD_PIN_RGB_LED_R, CYD_PIN_RGB_LED_G, CYD_PIN_RGB_LED_B);
+}
+
+void cyd_rgb_led_set(bool r, bool g, bool b)
+{
+    // Active low: 0 turns ON, 1 turns OFF
+    gpio_set_level(CYD_PIN_RGB_LED_R, r ? 0 : 1);
+    gpio_set_level(CYD_PIN_RGB_LED_G, g ? 0 : 1);
+    gpio_set_level(CYD_PIN_RGB_LED_B, b ? 0 : 1);
+}
+
+void cyd_rgb_led_off(void)
+{
+    cyd_rgb_led_set(false, false, false);
 }
